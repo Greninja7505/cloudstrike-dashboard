@@ -32,6 +32,7 @@ on:
 
 jobs:
   load-test:
+    name: "Load Test ${{ github.event.inputs.pattern }} - ${{ github.event.inputs.run_id }}"
     runs-on: ubuntu-latest
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
