@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from "react";
+import supabase from "@/lib/supabase";
 
 export type TestState = "idle" | "running" | "complete" | "error";
 export type LoadPattern = "spike" | "ramp" | "sustained";
@@ -52,12 +53,6 @@ export const useTestContext = () => {
 
 const now = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
-const runnerIds: Record<LoadPattern, string> = {
-  spike: "runner-az-eastus-7f3a",
-  ramp: "runner-az-westus-2b1c",
-  sustained: "runner-az-euwest-9d4e",
-};
-
 export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [testState, setTestState] = useState<TestState>("idle");
   const [activePatterns, setActivePatterns] = useState<LoadPattern[]>([]);
@@ -68,7 +63,7 @@ export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   });
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [results, setResults] = useState<FinalResults | null>(null);
-  const [errorMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -79,128 +74,89 @@ export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setRunners({ spike: { ...defaultRunner }, ramp: { ...defaultRunner }, sustained: { ...defaultRunner } });
     setLogs([]);
     setResults(null);
+    setErrorMessage("");
   }, []);
 
-  const runTest = useCallback((url: string, patterns: LoadPattern[], duration: number, concurrency: number) => {
+  const runTest = useCallback(async (url: string, patterns: LoadPattern[], duration: number, concurrency: number) => {
     resetTest();
     setTargetUrl(url);
     setActivePatterns(patterns);
     setTestState("running");
 
-    const startTime = Date.now();
-    const durationMs = duration * 1000;
-    const throughputData: { time: number; spike?: number; ramp?: number; sustained?: number }[] = [];
-    let tick = 0;
+    const run_id = crypto.randomUUID();
+    const owner = import.meta.env.VITE_GITHUB_OWNER;
+    const repo = import.meta.env.VITE_GITHUB_REPO;
+    const token = import.meta.env.VITE_GITHUB_TOKEN;
+    const pattern = patterns[0]; // For now, only one pattern at a time
 
-    // Initialize runners
-    const initRunners: Record<LoadPattern, RunnerMetrics> = {
-      spike: { ...defaultRunner },
-      ramp: { ...defaultRunner },
-      sustained: { ...defaultRunner },
-    };
-    patterns.forEach(p => { initRunners[p] = { ...defaultRunner, status: "initializing" }; });
-    setRunners({ ...initRunners });
-
-    // After 1.5s, set all to running
-    setTimeout(() => {
-      setRunners(prev => {
-        const next = { ...prev };
-        patterns.forEach(p => { next[p] = { ...next[p], status: "running" }; });
-        return next;
+    try {
+      const dispatchRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/workflows/load-test.yml/dispatches`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/vnd.github+json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ref: "main",
+          inputs: { target_url: url, pattern, duration: String(duration), concurrency: String(concurrency), run_id }
+        })
       });
-      setLogs(l => [...l, { time: now(), runner: "system", message: `All ${patterns.length} runners initialized and active`, level: "info" }]);
-    }, 1500);
 
-    intervalRef.current = setInterval(() => {
-      tick++;
-      const elapsed = Date.now() - startTime;
-      const progress = Math.min(elapsed / durationMs, 1);
+      if (!dispatchRes.ok) {
+        const err = await dispatchRes.json();
+        throw new Error(err.message || "Failed to dispatch workflow");
+      }
 
-      if (progress >= 1) {
-        if (intervalRef.current) clearInterval(intervalRef.current);
+      setLogs([{ time: now(), runner: "system", message: `Workflow dispatched for ${pattern} pattern.`, level: "info" }]);
 
-        // Finalize
-        setRunners(prev => {
-          const next = { ...prev };
-          patterns.forEach(p => { next[p] = { ...next[p], status: "complete", progress: 1 }; });
-          return next;
+      // Poll for completion
+      let pollCount = 0;
+      const pollInterval = setInterval(async () => {
+        if (pollCount++ > 60) { // Timeout after 5 minutes
+          clearInterval(pollInterval);
+          throw new Error("Workflow timed out.");
+        }
+
+        const runsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs`, {
+          headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" }
         });
+        if (!runsRes.ok) return;
 
-        const totalReq = patterns.length * concurrency * duration * (3 + Math.random() * 2);
-        const avgLat = 120 + Math.random() * 180;
-        const errRate = 1.2 + Math.random() * 4;
-        const peakTP = concurrency * (8 + Math.random() * 6);
+        const { workflow_runs } = await runsRes.json();
+        const relevantRun = workflow_runs.find((r: any) => r.display_title.includes(run_id));
 
-        const buckets = ["0-50ms", "50-100ms", "100-200ms", "200-500ms", "500ms+"];
-        const latDist = buckets.map((bucket, i) => {
-          const row: any = { bucket };
-          patterns.forEach(p => {
-            const weights = p === "spike" ? [5, 15, 30, 35, 15] : p === "ramp" ? [10, 25, 35, 25, 5] : [15, 30, 35, 15, 5];
-            row[p] = weights[i] + (Math.random() * 6 - 3);
+        if (relevantRun && relevantRun.status === "completed") {
+          clearInterval(pollInterval);
+          setLogs(l => [...l, { time: now(), runner: "system", message: "Workflow complete. Fetching results...", level: "info" }]);
+
+          const { data, error } = await supabase.from("test_runs").select("*").eq("run_id", run_id).single();
+
+          if (error || !data) {
+            throw new Error(error?.message || "Results not found in Supabase.");
+          }
+
+          setResults({
+            totalRequests: data.total_requests,
+            avgLatency: data.avg_latency,
+            errorRate: data.error_rate,
+            peakThroughput: data.peak_throughput,
+            latencyDistribution: Object.entries(data.latency_buckets || {}).map(([bucket, value]) => ({ bucket, [pattern]: value as number })),
+            throughputOverTime: [], // Placeholder
+            findings: `Test run ${data.status}.`,
           });
-          return row;
-        });
 
-        const findings: string[] = [];
-        if (patterns.includes("spike")) findings.push(`Spike pattern revealed a breaking point at ${Math.round(peakTP * 0.9)} req/s with error rate jumping to ${(errRate * 2.1).toFixed(1)}% above that threshold.`);
-        if (patterns.includes("ramp")) findings.push(`Ramp pattern showed stable scaling up to ${Math.round(duration * 0.7)}s before throttling was detected.`);
-        if (patterns.includes("sustained")) findings.push(`Sustained pattern maintained ${(100 - errRate * 0.4).toFixed(1)}% success rate throughout the full duration.`);
+          setTestState("complete");
+          setRunners(prev => ({ ...prev, [pattern]: { ...prev[pattern], status: "complete", progress: 1 } }));
+        }
+      }, 5000);
+      intervalRef.current = pollInterval;
 
-        setResults({
-          totalRequests: Math.round(totalReq),
-          avgLatency: Math.round(avgLat),
-          errorRate: parseFloat(errRate.toFixed(1)),
-          peakThroughput: Math.round(peakTP),
-          latencyDistribution: latDist,
-          throughputOverTime: throughputData,
-          findings: findings.join(" "),
-        });
-
-        setLogs(l => [...l, { time: now(), runner: "system", message: "All runners complete. Results aggregated.", level: "info" }]);
-        setTestState("complete");
-        return;
-      }
-
-      // Update runner metrics
-      setRunners(prev => {
-        const next = { ...prev };
-        patterns.forEach(p => {
-          const base = p === "spike" ? concurrency : p === "ramp" ? concurrency * progress : concurrency * 0.5;
-          const reqSent = Math.round(base * tick * (2 + Math.random()));
-          const sr = 96 + Math.random() * 4;
-          const lat = p === "spike" ? 80 + Math.random() * 300 : p === "ramp" ? 100 + progress * 200 + Math.random() * 50 : 90 + Math.random() * 60;
-          next[p] = { requestsSent: reqSent, successRate: parseFloat(sr.toFixed(1)), currentLatency: Math.round(lat), status: "running", progress };
-        });
-        return next;
-      });
-
-      // Throughput data point
-      const point: any = { time: Math.round(elapsed / 1000) };
-      patterns.forEach(p => {
-        const base = p === "spike" ? concurrency * (6 + Math.random() * 4) : p === "ramp" ? concurrency * progress * (5 + Math.random() * 3) : concurrency * (4 + Math.random() * 2);
-        point[p] = Math.round(base);
-      });
-      throughputData.push(point);
-
-      // Log entries
-      if (tick % 3 === 0) {
-        const p = patterns[tick % patterns.length];
-        const lat = 80 + Math.random() * 250;
-        const p95 = lat * (1.5 + Math.random());
-        setLogs(l => {
-          const newLogs = [...l, { time: now(), runner: runnerIds[p], message: `${Math.round(concurrency * (3 + Math.random() * 5))} req/s, p50=${Math.round(lat)}ms, p95=${Math.round(p95)}ms`, level: "info" as const }];
-          if (Math.random() > 0.7) {
-            const warns: string[] = ["concurrency reaching limit, throttling detected", "connection pool near capacity", "DNS resolution spike observed"];
-            newLogs.push({ time: now(), runner: runnerIds[patterns[Math.floor(Math.random() * patterns.length)]], message: warns[Math.floor(Math.random() * warns.length)], level: "warn" });
-          }
-          if (Math.random() > 0.85) {
-            const errs: string[] = ["3 timeouts in last window", "connection reset by peer", "HTTP 503 received"];
-            newLogs.push({ time: now(), runner: runnerIds[patterns[Math.floor(Math.random() * patterns.length)]], message: errs[Math.floor(Math.random() * errs.length)], level: "error" });
-          }
-          return newLogs.slice(-100);
-        });
-      }
-    }, 2000);
+    } catch (err: any) {
+      setTestState("error");
+      setErrorMessage(err.message);
+      setLogs(l => [...l, { time: now(), runner: "system", message: err.message, level: "error" }]);
+    }
   }, [resetTest]);
 
   return (

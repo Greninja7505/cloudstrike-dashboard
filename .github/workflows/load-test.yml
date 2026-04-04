@@ -1,0 +1,128 @@
+name: Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL to test'
+        required: true
+        type: string
+      pattern:
+        description: 'Load pattern'
+        required: true
+        type: choice
+        options:
+          - spike
+          - ramp
+          - sustained
+      duration:
+        description: 'Test duration (seconds)'
+        required: false
+        default: 60
+        type: number
+      concurrency:
+        description: 'Concurrency level'
+        required: false
+        default: 50
+        type: number
+      run_id:
+        description: 'Unique run identifier'
+        required: true
+        type: string
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install autocannon
+        run: npm install -g autocannon
+
+      - name: Run load test
+        id: loadtest
+        run: |
+          set -e
+          PATTERN="${{ github.event.inputs.pattern }}"
+          TARGET_URL="${{ github.event.inputs.target_url }}"
+          DURATION="${{ github.event.inputs.duration }}"
+          CONCURRENCY="${{ github.event.inputs.concurrency }}"
+          RUN_ID="${{ github.event.inputs.run_id }}"
+          LOGS=()
+          TIMESTAMP() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+          if [ "$PATTERN" = "spike" ]; then
+            LOGS+=("$(TIMESTAMP): Starting spike test")
+            autocannon -j -d "$DURATION" -c "$CONCURRENCY" "$TARGET_URL" > result.json
+          elif [ "$PATTERN" = "ramp" ]; then
+            LOGS+=("$(TIMESTAMP): Starting ramp test")
+            INTERVAL=10
+            CURRENT=10
+            END=$CONCURRENCY
+            DURATION_LEFT=$DURATION
+            > result.json
+            while [ $CURRENT -le $END ] && [ $DURATION_LEFT -gt 0 ]; do
+              THIS_DURATION=$(( INTERVAL < DURATION_LEFT ? INTERVAL : DURATION_LEFT ))
+              LOGS+=("$(TIMESTAMP): Running $CURRENT concurrency for $THIS_DURATION seconds")
+              autocannon -j -d "$THIS_DURATION" -c "$CURRENT" "$TARGET_URL" > ramp.json
+              jq -s '.[0] * .[1]' result.json ramp.json > tmp.json && mv tmp.json result.json
+              CURRENT=$((CURRENT + 10))
+              DURATION_LEFT=$((DURATION_LEFT - THIS_DURATION))
+            done
+          elif [ "$PATTERN" = "sustained" ]; then
+            LOGS+=("$(TIMESTAMP): Starting sustained test")
+            autocannon -j -d "$DURATION" -c "$CONCURRENCY" "$TARGET_URL" > result.json
+          else
+            echo "Unknown pattern: $PATTERN" && exit 1
+          fi
+
+          LOGS+=("$(TIMESTAMP): Test complete")
+          echo "${LOGS[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))' > logs.json
+
+      - name: Parse and post results to Supabase
+        run: |
+          set -e
+          RUN_ID="${{ github.event.inputs.run_id }}"
+          TARGET_URL="${{ github.event.inputs.target_url }}"
+          PATTERN="${{ github.event.inputs.pattern }}"
+          DURATION="${{ github.event.inputs.duration }}"
+          CONCURRENCY="${{ github.event.inputs.concurrency }}"
+          RESULT=$(cat result.json)
+          LOGS=$(cat logs.json)
+          TOTAL_REQUESTS=$(jq '.requests.total' result.json)
+          AVG_LATENCY=$(jq '.latency.average' result.json)
+          P50_LATENCY=$(jq '.latency.p50' result.json)
+          P95_LATENCY=$(jq '.latency.p95' result.json)
+          P99_LATENCY=$(jq '.latency.p99' result.json)
+          ERROR_RATE=$(jq '.errors' result.json)
+          PEAK_THROUGHPUT=$(jq '.throughput.max' result.json)
+          LATENCY_BUCKETS=$(jq '.latency.buckets' result.json)
+          curl -X POST "$SUPABASE_URL/rest/v1/test_runs" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            -H "Content-Type: application/json" \
+            -d @<(jq -n --arg run_id "$RUN_ID" \
+                      --arg target_url "$TARGET_URL" \
+                      --arg pattern "$PATTERN" \
+                      --argjson duration "$DURATION" \
+                      --argjson concurrency "$CONCURRENCY" \
+                      --argjson total_requests "$TOTAL_REQUESTS" \
+                      --argjson avg_latency "$AVG_LATENCY" \
+                      --argjson p50_latency "$P50_LATENCY" \
+                      --argjson p95_latency "$P95_LATENCY" \
+                      --argjson p99_latency "$P99_LATENCY" \
+                      --argjson error_rate "$ERROR_RATE" \
+                      --argjson peak_throughput "$PEAK_THROUGHPUT" \
+                      --arg status "complete" \
+                      --argjson runner_logs "$LOGS" \
+                      --argjson latency_buckets "$LATENCY_BUCKETS" \
+                      '{run_id: $run_id, target_url: $target_url, pattern: $pattern, duration: $duration, concurrency: $concurrency, total_requests: $total_requests, avg_latency: $avg_latency, p50_latency: $p50_latency, p95_latency: $p95_latency, p99_latency: $p99_latency, error_rate: $error_rate, peak_throughput: $peak_throughput, status: $status, runner_logs: $runner_logs, latency_buckets: $latency_buckets}')

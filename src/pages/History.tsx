@@ -1,23 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, ChevronDown, ChevronUp } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid, Tooltip } from "recharts";
-
-// TODO: Replace with real Supabase query — `supabase.from('test_runs').select('*')`
-const mockRuns = [
-  { id: "run-20240315-a3f7", timestamp: "2024-03-15 14:23:01", url: "https://api.github.com/zen", patterns: ["spike", "ramp"], duration: "60s", totalReqs: 142000, avgLatency: 124, errorRate: 2.1, peakThroughput: 847, status: "complete" },
-  { id: "run-20240314-b2e1", timestamp: "2024-03-14 09:45:22", url: "https://httpbin.org/delay/1", patterns: ["sustained"], duration: "90s", totalReqs: 45200, avgLatency: 312, errorRate: 0.8, peakThroughput: 502, status: "complete" },
-  { id: "run-20240313-c8d4", timestamp: "2024-03-13 16:12:45", url: "https://jsonplaceholder.typicode.com/posts", patterns: ["spike", "ramp", "sustained"], duration: "120s", totalReqs: 98400, avgLatency: 89, errorRate: 1.4, peakThroughput: 1203, status: "complete" },
-  { id: "run-20240312-d1f9", timestamp: "2024-03-12 11:30:10", url: "https://api.github.com/users", patterns: ["ramp"], duration: "60s", totalReqs: 31200, avgLatency: 201, errorRate: 3.7, peakThroughput: 623, status: "complete" },
-  { id: "run-20240311-e5a2", timestamp: "2024-03-11 08:15:33", url: "https://httpbin.org/status/200", patterns: ["spike"], duration: "30s", totalReqs: 67800, avgLatency: 84, errorRate: 0.3, peakThroughput: 2260, status: "complete" },
-  { id: "run-20240310-f7b3", timestamp: "2024-03-10 22:05:18", url: "https://jsonplaceholder.typicode.com/comments", patterns: ["sustained", "ramp"], duration: "90s", totalReqs: 72100, avgLatency: 156, errorRate: 5.8, peakThroughput: 801, status: "complete" },
-  { id: "run-20240309-a9c6", timestamp: "2024-03-09 13:42:55", url: "https://api.github.com/zen", patterns: ["spike", "sustained"], duration: "60s", totalReqs: 112300, avgLatency: 143, errorRate: 4.2, peakThroughput: 1872, status: "complete" },
-  { id: "run-20240308-b4d8", timestamp: "2024-03-08 17:28:07", url: "https://httpbin.org/get", patterns: ["ramp"], duration: "60s", totalReqs: 28900, avgLatency: 234, errorRate: 1.1, peakThroughput: 482, status: "complete" },
-  { id: "run-20240307-c2e3", timestamp: "2024-03-07 10:00:00", url: "https://httpbin.org/delay/2", patterns: ["spike"], duration: "30s", totalReqs: 15400, avgLatency: 789, errorRate: 15.2, peakThroughput: 513, status: "failed" },
-  { id: "run-20240306-d6f1", timestamp: "2024-03-06 19:33:44", url: "https://jsonplaceholder.typicode.com/todos", patterns: ["spike", "ramp", "sustained"], duration: "120s", totalReqs: 134600, avgLatency: 97, errorRate: 0.9, peakThroughput: 1122, status: "complete" },
-  { id: "run-20240305-e8a7", timestamp: "2024-03-05 06:15:22", url: "https://api.github.com/repos", patterns: ["sustained"], duration: "90s", totalReqs: 41300, avgLatency: 178, errorRate: 2.6, peakThroughput: 459, status: "complete" },
-  { id: "run-20240304-f3b9", timestamp: "2024-03-04 14:50:11", url: "https://httpbin.org/post", patterns: ["ramp", "sustained"], duration: "60s", totalReqs: 56700, avgLatency: 145, errorRate: 3.4, peakThroughput: 945, status: "complete" },
-];
+import supabase, { TestRun } from "@/lib/supabase";
 
 const patternColors: Record<string, string> = { spike: "bg-primary/20 text-primary", ramp: "bg-secondary/20 text-secondary", sustained: "bg-success/20 text-success" };
 
@@ -26,13 +11,31 @@ const History = () => {
   const [patternFilter, setPatternFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [runs, setRuns] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const filtered = mockRuns.filter(r => {
-    if (search && !r.url.toLowerCase().includes(search.toLowerCase())) return false;
-    if (patternFilter !== "all" && !r.patterns.includes(patternFilter)) return false;
+  useEffect(() => {
+    setLoading(true);
+    supabase
+      .from("test_runs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (error) setError(error.message);
+        else setRuns(data || []);
+        setLoading(false);
+      });
+  }, []);
+
+  const filtered = runs.filter(r => {
+    if (search && !r.target_url?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (patternFilter !== "all" && !(r.patterns || []).includes(patternFilter)) return false;
     if (statusFilter !== "all" && r.status !== statusFilter) return false;
     return true;
   });
+
+
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8">
@@ -121,12 +124,10 @@ const History = () => {
         {/* Expanded Row Charts */}
         <AnimatePresence>
           {expandedId && (() => {
-            const run = mockRuns.find(r => r.id === expandedId);
+            const run = runs.find(r => r.id === expandedId);
             if (!run) return null;
-            const latData = ["0-50ms", "50-100ms", "100-200ms", "200-500ms", "500ms+"].map(bucket => ({
-              bucket,
-              requests: Math.round(Math.random() * 40 + 5),
-            }));
+            const buckets = run.latency_buckets || {};
+            const latData = Object.entries(buckets).map(([bucket, value]) => ({ bucket, requests: value }));
             return (
               <motion.div
                 key={expandedId}
