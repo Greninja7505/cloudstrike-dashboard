@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from "react";
+import React, { createContext, useContext, useState, useEffect } from "react";
 import supabase from "@/lib/supabase";
 
 export type TestState = "idle" | "running" | "complete" | "error";
@@ -37,6 +37,9 @@ interface TestContextValue {
   results: FinalResults | null;
   errorMessage: string;
   targetUrl: string;
+  testRuns: any[];
+  loading: boolean;
+  refresh: () => void;
   runTest: (url: string, patterns: LoadPattern[], duration: number, concurrency: number) => void;
   resetTest: () => void;
 }
@@ -65,19 +68,40 @@ export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [results, setResults] = useState<FinalResults | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [testRuns, setTestRuns] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const resetTest = useCallback(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
+  // Fetch test runs from Supabase
+  const fetchTestRuns = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("test_runs")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) console.error("[Supabase] Error fetching test_runs:", error);
+      else setTestRuns(data || []);
+    } catch (err) {
+      console.error("[Supabase] Fetch error:", err);
+    }
+  };
+
+  // Poll Supabase every 5 seconds
+  useEffect(() => {
+    fetchTestRuns();
+    const interval = setInterval(fetchTestRuns, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const resetTest = () => {
     setTestState("idle");
     setActivePatterns([]);
     setRunners({ spike: { ...defaultRunner }, ramp: { ...defaultRunner }, sustained: { ...defaultRunner } });
     setLogs([]);
     setResults(null);
     setErrorMessage("");
-  }, []);
+  };
 
-  const runTest = useCallback(async (url: string, patterns: LoadPattern[], duration: number, concurrency: number) => {
+  const runTest = async (url: string, patterns: LoadPattern[], duration: number, concurrency: number) => {
     resetTest();
     setTargetUrl(url);
     setActivePatterns(patterns);
@@ -108,72 +132,59 @@ export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         throw new Error(err.message || "Failed to dispatch workflow");
       }
 
-      setLogs([{ time: now(), runner: "system", message: `Workflow dispatched for ${pattern} pattern.`, level: "info" }]);
-
-      // Poll for completion
+      setLogs([{ time: now(), runner: "system", message: `Workflow dispatched for ${pattern} pattern (run_id: ${run_id}).`, level: "info" }]);
+      
+      // Poll Supabase for the result of this specific run
       let pollCount = 0;
       const pollInterval = setInterval(async () => {
-        if (pollCount++ > 60) { // Timeout after 5 minutes
+        if (pollCount++ > 60) { // 5 minute timeout
           clearInterval(pollInterval);
-          throw new Error("Workflow timed out.");
+          setTestState("error");
+          setErrorMessage("Test timed out waiting for results.");
+          return;
         }
 
-        const runsRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs`, {
-          headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" }
-        });
-        if (!runsRes.ok) return;
+        // Fetch the specific run from Supabase
+        const { data, error } = await supabase
+          .from("test_runs")
+          .select("*")
+          .eq("run_id", run_id)
+          .single();
 
-        const { workflow_runs } = await runsRes.json();
-        const relevantRun = workflow_runs.find((r: any) => r.display_title.includes(run_id));
-
-        if (relevantRun && relevantRun.status === "completed") {
+        if (!error && data && data.status === "complete") {
           clearInterval(pollInterval);
-          setLogs(l => [...l, { time: now(), runner: "system", message: "Workflow complete. Fetching results...", level: "info" }]);
-
-          const { data, error } = await supabase.from("test_runs").select("*").eq("run_id", run_id).single();
-
-          // Debug: log the fetched row
-          console.log("[Supabase] Row for run_id", run_id, data);
-
-          if (error || !data) {
-            throw new Error(error?.message || "Results not found in Supabase.");
-          }
-
-          // Defensive: handle null/empty latency_buckets and patterns
-          const latencyBuckets = data.latency_buckets && typeof data.latency_buckets === "object" ? data.latency_buckets : {};
-          // If patterns is a string 'NULL' or null, treat as empty array
-          let patternsArr: string[] = [];
-          if (Array.isArray(data.patterns)) {
-            patternsArr = data.patterns;
-          } else if (typeof data.patterns === "string" && data.patterns !== "NULL") {
-            try { patternsArr = JSON.parse(data.patterns); } catch { patternsArr = []; }
-          }
-
+          console.log("[ControlPanel] Test completed with run_id:", run_id, "Data:", data);
+          
           setResults({
             totalRequests: data.total_requests,
             avgLatency: data.avg_latency,
             errorRate: data.error_rate,
             peakThroughput: data.peak_throughput,
-            latencyDistribution: Object.entries(latencyBuckets).map(([bucket, value]) => ({ bucket, [pattern]: value as number })),
-            throughputOverTime: [], // Placeholder
-            findings: `Test run ${data.status}.`,
+            latencyDistribution: (data.latency_buckets && Object.keys(data.latency_buckets).length > 0)
+              ? Object.entries(data.latency_buckets).map(([bucket, value]) => ({ bucket, [pattern]: value as number }))
+              : [],
+            throughputOverTime: [],
+            findings: `Test run ${data.status}.`
           });
-
+          
           setTestState("complete");
           setRunners(prev => ({ ...prev, [pattern]: { ...prev[pattern], status: "complete", progress: 1 } }));
+          setLogs(l => [...l, { time: now(), runner: "system", message: "Results fetched from Supabase.", level: "info" }]);
+          
+          // Refresh the full list
+          fetchTestRuns();
         }
       }, 5000);
-      intervalRef.current = pollInterval;
 
     } catch (err: any) {
       setTestState("error");
       setErrorMessage(err.message);
       setLogs(l => [...l, { time: now(), runner: "system", message: err.message, level: "error" }]);
     }
-  }, [resetTest]);
+  };
 
   return (
-    <GlobalTestContext.Provider value={{ testState, activePatterns, runners, logs, results, errorMessage, targetUrl, runTest, resetTest }}>
+    <GlobalTestContext.Provider value={{ testState, activePatterns, runners, logs, results, errorMessage, targetUrl, testRuns, loading, refresh: fetchTestRuns, runTest, resetTest }}>
       {children}
     </GlobalTestContext.Provider>
   );
