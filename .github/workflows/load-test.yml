@@ -47,7 +47,8 @@ jobs:
           node-version: 20
 
       - name: Install autocannon
-        run: npm install -g autocannon
+        run: npm install -g autocannon --legacy-peer-deps
+        timeout-minutes: 10
 
       - name: Run load test
         id: loadtest
