@@ -99,21 +99,25 @@ jobs:
           CONCURRENCY="${{ github.event.inputs.concurrency }}"
           RESULT=$(cat result.json)
           LOGS=$(cat logs.json)
-          TOTAL_REQUESTS=$(jq '.requests.total' result.json)
-          AVG_LATENCY=$(jq '.latency.average' result.json)
-          P50_LATENCY=$(jq '.latency.p50' result.json)
-          P95_LATENCY=$(jq '.latency.p95' result.json)
-          P99_LATENCY=$(jq '.latency.p99' result.json)
-          ERROR_RATE=$(jq '.errors' result.json)
-          PEAK_THROUGHPUT=$(jq '.throughput.max' result.json)
-          LATENCY_BUCKETS=$(jq '.latency.buckets' result.json)
+          
+          # Extract metrics with defaults for missing fields
+          TOTAL_REQUESTS=$(jq '.requests.total // 0' result.json)
+          AVG_LATENCY=$(jq '.latency.average // 0' result.json)
+          P50_LATENCY=$(jq '.latency.p50 // 0' result.json)
+          P95_LATENCY=$(jq '.latency.p95 // 0' result.json)
+          P99_LATENCY=$(jq '.latency.p99 // 0' result.json)
+          ERROR_RATE=$(jq '.errors // 0' result.json)
+          PEAK_THROUGHPUT=$(jq '.throughput.max // 0' result.json)
+          # Use empty object for latency_buckets (jsonb type)
+          LATENCY_BUCKETS=$(jq '.latency | if has("buckets") then .buckets else {} end' result.json)
+          
           curl -X POST "$SUPABASE_URL/rest/v1/test_runs" \
             -H "apikey: $SUPABASE_ANON_KEY" \
             -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
             -H "Content-Type: application/json" \
             -d @<(jq -n --arg run_id "$RUN_ID" \
                       --arg target_url "$TARGET_URL" \
-                      --arg pattern "$PATTERN" \
+                      --arg patterns "$PATTERN" \
                       --argjson duration "$DURATION" \
                       --argjson concurrency "$CONCURRENCY" \
                       --argjson total_requests "$TOTAL_REQUESTS" \
@@ -126,4 +130,4 @@ jobs:
                       --arg status "complete" \
                       --argjson runner_logs "$LOGS" \
                       --argjson latency_buckets "$LATENCY_BUCKETS" \
-                      '{run_id: $run_id, target_url: $target_url, pattern: $pattern, duration: $duration, concurrency: $concurrency, total_requests: $total_requests, avg_latency: $avg_latency, p50_latency: $p50_latency, p95_latency: $p95_latency, p99_latency: $p99_latency, error_rate: $error_rate, peak_throughput: $peak_throughput, status: $status, runner_logs: $runner_logs, latency_buckets: $latency_buckets}')
+                      '{run_id: $run_id, target_url: $target_url, patterns: $patterns, duration: $duration, concurrency: $concurrency, total_requests: $total_requests, avg_latency: $avg_latency, p50_latency: $p50_latency, p95_latency: $p95_latency, p99_latency: $p99_latency, error_rate: $error_rate, peak_throughput: $peak_throughput, status: $status, runner_logs: $runner_logs, latency_buckets: $latency_buckets}')
