@@ -70,12 +70,17 @@ jobs:
             CURRENT=10
             END=$CONCURRENCY
             DURATION_LEFT=$DURATION
-            > result.json
             while [ $CURRENT -le $END ] && [ $DURATION_LEFT -gt 0 ]; do
               THIS_DURATION=$(( INTERVAL < DURATION_LEFT ? INTERVAL : DURATION_LEFT ))
               LOGS+=("$(TIMESTAMP): Running $CURRENT concurrency for $THIS_DURATION seconds")
               autocannon -j -d "$THIS_DURATION" -c "$CURRENT" "$TARGET_URL" > ramp.json
-              jq -s '.[0] * .[1]' result.json ramp.json > tmp.json && mv tmp.json result.json
+              if [ ! -s result.json ]; then
+                # First iteration: use ramp.json as result.json
+                cp ramp.json result.json
+              else
+                # Subsequent iterations: merge results
+                jq -s '.[0] * .[1]' result.json ramp.json > tmp.json && mv tmp.json result.json
+              fi
               CURRENT=$((CURRENT + 10))
               DURATION_LEFT=$((DURATION_LEFT - THIS_DURATION))
             done
