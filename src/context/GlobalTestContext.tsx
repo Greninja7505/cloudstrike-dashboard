@@ -132,8 +132,21 @@ export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
           const { data, error } = await supabase.from("test_runs").select("*").eq("run_id", run_id).single();
 
+          // Debug: log the fetched row
+          console.log("[Supabase] Row for run_id", run_id, data);
+
           if (error || !data) {
             throw new Error(error?.message || "Results not found in Supabase.");
+          }
+
+          // Defensive: handle null/empty latency_buckets and patterns
+          const latencyBuckets = data.latency_buckets && typeof data.latency_buckets === "object" ? data.latency_buckets : {};
+          // If patterns is a string 'NULL' or null, treat as empty array
+          let patternsArr: string[] = [];
+          if (Array.isArray(data.patterns)) {
+            patternsArr = data.patterns;
+          } else if (typeof data.patterns === "string" && data.patterns !== "NULL") {
+            try { patternsArr = JSON.parse(data.patterns); } catch { patternsArr = []; }
           }
 
           setResults({
@@ -141,7 +154,7 @@ export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             avgLatency: data.avg_latency,
             errorRate: data.error_rate,
             peakThroughput: data.peak_throughput,
-            latencyDistribution: Object.entries(data.latency_buckets || {}).map(([bucket, value]) => ({ bucket, [pattern]: value as number })),
+            latencyDistribution: Object.entries(latencyBuckets).map(([bucket, value]) => ({ bucket, [pattern]: value as number })),
             throughputOverTime: [], // Placeholder
             findings: `Test run ${data.status}.`,
           });
