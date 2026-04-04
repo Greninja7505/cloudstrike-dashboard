@@ -187,14 +187,13 @@ const RunningState = ({ patterns, runners, logs, logRef }: any) => (
 const CompleteState = ({ results, patterns }: { results: any; patterns: LoadPattern[] }) => {
   const patternColors: Record<string, string> = { spike: "#3B82F6", ramp: "#06B6D4", sustained: "#22C55E" };
   
-  // Ensure we have data for charts, use empty array if not
-  const latencyData = results.latencyDistribution && results.latencyDistribution.length > 0 
-    ? results.latencyDistribution 
-    : [{ bucket: "data", spike: 0, ramp: 0, sustained: 0 }]; // Placeholder with keys for all patterns
-  
-  const throughputData = results.throughputOverTime && results.throughputOverTime.length > 0
-    ? results.throughputOverTime
-    : [{ time: 0, spike: 0, ramp: 0, sustained: 0 }]; // Placeholder
+  // Create latency percentile data from captured metrics
+  const latencyPercentiles = [
+    { name: "Avg", value: results.avgLatency || 0 },
+    { name: "P50", value: results.p50_latency || 0 },
+    { name: "P95", value: results.p95_latency || 0 },
+    { name: "P99", value: results.p99_latency || 0 },
+  ];
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
@@ -213,47 +212,25 @@ const CompleteState = ({ results, patterns }: { results: any; patterns: LoadPatt
       </div>
 
       <div className="rounded-lg border border-border bg-card p-4 shadow-[0_0_20px_rgba(59,130,246,0.04)]">
-        <h3 className="font-display text-sm text-foreground mb-4">LATENCY DISTRIBUTION</h3>
-        {latencyData && latencyData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={latencyData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(59,130,246,0.1)" />
-              <XAxis dataKey="bucket" tick={{ fontSize: 11, fill: "#64748b" }} />
-              <YAxis tick={{ fontSize: 11, fill: "#64748b" }} />
-              <Tooltip contentStyle={{ backgroundColor: "#0a1628", border: "1px solid rgba(59,130,246,0.15)", borderRadius: 8, fontSize: 12 }} />
-              {patterns.map(p => (
-                <Bar key={p} dataKey={p} fill={patternColors[p]} radius={[4, 4, 0, 0]} animationDuration={500} />
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="h-64 flex items-center justify-center text-muted-foreground">No latency bucket data available</div>
-        )}
+        <h3 className="font-display text-sm text-foreground mb-4">LATENCY PERCENTILES</h3>
+        <ResponsiveContainer width="100%" height={250}>
+          <BarChart data={latencyPercentiles}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(59,130,246,0.1)" />
+            <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#64748b" }} />
+            <YAxis tick={{ fontSize: 11, fill: "#64748b" }} label={{ value: "Latency (ms)", angle: -90, position: "insideLeft", fontSize: 11, fill: "#64748b" }} />
+            <Tooltip contentStyle={{ backgroundColor: "#0a1628", border: "1px solid rgba(59,130,246,0.15)", borderRadius: 8, fontSize: 12 }} formatter={(value) => `${value}ms`} />
+            <Bar dataKey="value" fill="#3B82F6" radius={[4, 4, 0, 0]} animationDuration={500} />
+          </BarChart>
+        </ResponsiveContainer>
       </div>
 
       <div className="rounded-lg border border-border bg-card p-4 shadow-[0_0_20px_rgba(59,130,246,0.04)]">
-        <h3 className="font-display text-sm text-foreground mb-4">THROUGHPUT OVER TIME</h3>
-        {throughputData && throughputData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={throughputData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(59,130,246,0.1)" />
-              <XAxis dataKey="time" tick={{ fontSize: 11, fill: "#64748b" }} label={{ value: "Time (s)", position: "insideBottom", offset: -5, fontSize: 11, fill: "#64748b" }} />
-              <YAxis tick={{ fontSize: 11, fill: "#64748b" }} />
-              <Tooltip contentStyle={{ backgroundColor: "#0a1628", border: "1px solid rgba(59,130,246,0.15)", borderRadius: 8, fontSize: 12 }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              {patterns.map(p => (
-                <Line key={p} type="monotone" dataKey={p} stroke={patternColors[p]} strokeWidth={2} dot={false} animationDuration={500} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="h-64 flex items-center justify-center text-muted-foreground">No throughput data available</div>
-        )}
-      </div>
-
-      <div className="rounded-lg border border-border bg-card p-4 shadow-[0_0_20px_rgba(59,130,246,0.04)]">
-        <h3 className="font-display text-sm text-foreground mb-2">FINDINGS</h3>
-        <p className="font-body text-sm text-muted-foreground leading-relaxed">{results.findings || "Test completed"}</p>
+        <h3 className="font-display text-sm text-foreground mb-4">TEST SUMMARY</h3>
+        <div className="space-y-2 font-body text-sm text-muted-foreground">
+          <p>✓ Test completed successfully</p>
+          <p>✓ Pattern: <span className="text-foreground capitalize">{patterns.join(", ")}</span></p>
+          <p>{results.findings || "No additional findings"}</p>
+        </div>
       </div>
     </motion.div>
   );

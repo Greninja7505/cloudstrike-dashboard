@@ -22,6 +22,9 @@ export interface LogEntry {
 export interface FinalResults {
   totalRequests: number;
   avgLatency: number;
+  p50_latency?: number;
+  p95_latency?: number;
+  p99_latency?: number;
   errorRate: number;
   peakThroughput: number;
   latencyDistribution: { bucket: string; spike?: number; ramp?: number; sustained?: number }[];
@@ -158,6 +161,9 @@ export const GlobalTestProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           setResults({
             totalRequests: data.total_requests,
             avgLatency: data.avg_latency,
+            p50_latency: data.p50_latency,
+            p95_latency: data.p95_latency,
+            p99_latency: data.p99_latency,
             errorRate: data.error_rate,
             peakThroughput: data.peak_throughput,
             latencyDistribution: (data.latency_buckets && Object.keys(data.latency_buckets).length > 0)
