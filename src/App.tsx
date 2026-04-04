@@ -1,27 +1,26 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { Toaster as Sonner } from "@/components/ui/sonner";
-import { Toaster } from "@/components/ui/toaster";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import Index from "./pages/Index.tsx";
-import NotFound from "./pages/NotFound.tsx";
-
-const queryClient = new QueryClient();
+import { GlobalTestProvider } from "./context/GlobalTestContext";
+import Layout from "./components/Layout";
+import Home from "./pages/Home";
+import ControlPanel from "./pages/ControlPanel";
+import HowItWorks from "./pages/HowItWorks";
+import History from "./pages/History";
+import NotFound from "./pages/NotFound";
 
 const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Index />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+  <GlobalTestProvider>
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Home />} />
+          <Route path="/control-panel" element={<ControlPanel />} />
+          <Route path="/how-it-works" element={<HowItWorks />} />
+          <Route path="/history" element={<History />} />
           <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  </GlobalTestProvider>
 );
 
 export default App;
